@@ -105,6 +105,15 @@ TIME_RULES = {
     "pm_out": ("15:00", "20:00"),
 }
 
+# # TEST VALUES FOR TESTING OF FLAGGING
+
+# TIME_RULES = {
+#     "am_in":  ("00:00", "23:59"),
+#     "am_out": ("00:00", "23:59"),
+#     "pm_in":  ("00:00", "23:59"),
+#     "pm_out": ("00:00", "23:59"),
+# }
+
 
 def validate_time(field: str, time_str: str) -> tuple:
     if field not in TIME_RULES:

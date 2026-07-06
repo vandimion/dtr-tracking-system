@@ -89,15 +89,19 @@ class EmployeeApp(App):
         yield Footer()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        handlers = {
-            "btn-login":   self._handle_login,
-            "btn-log":     self._show_confirm,
-            "btn-confirm": self._save_entry,
-            "btn-cancel":  self._cancel_confirm,
-        }
-        handler = handlers.get(event.button.id)
-        if handler:
-            handler()
+        event.stop()
+        button_id = event.button.id
+
+        if button_id == "btn-login":
+            self._handle_login()
+        elif button_id == "btn-log":
+            self._show_confirm()
+        elif button_id == "btn-confirm":
+            if self.pending_time:
+                self._save_entry()
+        elif button_id == "btn-cancel":
+            if self.pending_time:
+                self._cancel_confirm()
 
     def _handle_login(self) -> None:
         emp_id = self.query_one("#input-id",  Input).value.strip().upper()
@@ -201,24 +205,41 @@ class EmployeeApp(App):
         if not self.next_field:
             return
 
-        self.pending_time     = datetime.now().strftime("%H:%M")
-        is_valid, warning     = validate_time(self.next_field, self.pending_time)
+        try:
+            self.query_one("#confirm-container").remove()
+        except Exception:
+            pass
 
-        self.mount(
-            Container(
-                ConfirmDialog(
-                    action        = self.next_field,
-                    time_value    = self.pending_time,
-                    employee_name = self.employee["full_name"],
-                ),
-                Label(warning if not is_valid else "", id="warn-msg"),
-                Horizontal(
-                    Button("Confirm (Y)", variant="success", id="btn-confirm"),
-                    Button("Cancel (N)",  variant="error",   id="btn-cancel"),
-                ),
-                id="confirm-container"
-            )
+        self.pending_time = datetime.now().strftime("%H:%M")
+        is_valid, warning = validate_time(
+            self.next_field, self.pending_time
         )
+
+        def mount_confirm():
+            try:
+                self.query_one("#record-container").mount(
+                    Container(
+                        ConfirmDialog(
+                            action        = self.next_field,
+                            time_value    = self.pending_time,
+                            employee_name = self.employee["full_name"],
+                        ),
+                        Label(warning if not is_valid else "",
+                            id="warn-msg"),
+                        Horizontal(
+                            Button("Confirm (Y)", variant="success",
+                                id="btn-confirm"),
+                            Button("Cancel (N)",  variant="error",
+                                id="btn-cancel"),
+                        ),
+                        id="confirm-container"
+                    )
+                )
+                self.set_focus(None)
+            except Exception as e:
+                self._show_status(f"[red]{e}[/]")
+
+        self.call_after_refresh(mount_confirm)
 
     def _save_entry(self) -> None:
         field  = self.next_field
@@ -258,11 +279,16 @@ class EmployeeApp(App):
             pass
 
     def _refresh_record(self) -> None:
+        self.pending_time = None
+        try:
+            self.query_one("#confirm-container").remove()
+        except Exception:
+            pass
         try:
             self.query_one("#record-container").remove()
         except Exception:
             pass
-        self._load_record_screen()
+        self.call_after_refresh(self._load_record_screen)
 
     def _show_status(self, msg: str) -> None:
         try:
@@ -294,6 +320,20 @@ class EmployeeApp(App):
                 id="login-container"
             )
         )
+
+    def action_confirm(self) -> None:
+        if self.pending_time:
+            self._save_entry()
+
+    def action_cancel(self) -> None:
+        if self.pending_time:
+            self._cancel_confirm()
+
+    def on_key(self, event) -> None:
+        if event.key == "y" and self.pending_time:
+            self._save_entry()
+        elif event.key == "n" and self.pending_time:
+            self._cancel_confirm()
 
 
 def run():
