@@ -1,0 +1,42 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Database
+data/*.db
+data/*.sqlite
+
+# Virtual environment
+venv/
+env/
+.env
+
+# Logs
+logs/
+*.log
+
+# Reports 
+reports/*.txt
+reports/*.pdf
+
+# VS Code
+.vscode/
+
+# Windows
+Thumbs.db
+desktop.ini
+*.lnk
+
+# Mac 
+.DS_Store
+
+# Pytest
+.pytest_cache/
+*.pytest_cache
+
+# Distribution
+dist/
+build/
+*.egg-info/
