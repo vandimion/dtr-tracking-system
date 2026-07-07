@@ -69,7 +69,7 @@ def export_monthly_report(month: str, requested_by: str = "SYSTEM") -> str:
         emp_id = emp["employee_id"]
 
         entries = conn.execute("""
-            SELECT date, am_in, am_out, pm_in, pm_out,
+            SELECT id, employee_id, date, am_in, am_out, pm_in, pm_out,
                    total_hours, status, is_flagged
             FROM dtr_entries
             WHERE employee_id = ?

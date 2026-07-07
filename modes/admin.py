@@ -68,15 +68,19 @@ class AdminApp(App):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         handlers = {
-            "btn-unlock":       self._handle_login,
-            "btn-reset":        self._reset_daily,
-            "btn-add-form":     self._load_add_employee_form,
-            "btn-add-employee": self._save_new_employee,
-            "btn-deact-form":   self._load_deactivate_form,
-            "btn-deactivate":   self._do_deactivate,
-            "btn-audit":        self._view_audit_log,
-            "btn-export":       self._export_report,
-            "btn-back":         self.action_back,
+            "btn-unlock":          self._handle_login,
+            "btn-reset":           self._reset_daily,
+            "btn-add-form":        self._load_add_employee_form,
+            "btn-add-employee":    self._save_new_employee,
+            "btn-deact-form":      self._load_deactivate_form,
+            "btn-deactivate":      self._do_deactivate,
+            "btn-audit":           self._view_audit_log,
+            "btn-export":          self._export_report,
+            "btn-back":            self.action_back,
+            "btn-promote-form":    self._load_promote_form,
+            "btn-promote":         self._do_promote,
+            "btn-deact-sup-form":  self._load_deactivate_sup_form,
+            "btn-deactivate-sup":  self._do_deactivate_sup,
         }
         handler = handlers.get(event.button.id)
         if handler:
@@ -134,6 +138,14 @@ class AdminApp(App):
                     Button(
                         "[5] Export monthly DTR",
                         id="btn-export", variant="success"
+                    ),
+                    Button(
+                        "[6] Promote employee to supervisor",
+                        id="btn-promote-form", variant="primary"
+                    ),
+                    Button(
+                        "[7] Deactivate supervisor",
+                        id="btn-deact-sup-form", variant="error"
                     ),
                     id="menu-box"
                 ),
@@ -216,16 +228,37 @@ class AdminApp(App):
 
         try:
             conn = get_connection()
-            conn.execute("""
-                INSERT INTO employees
-                    (employee_id, full_name, department,
-                     position, pin_hash, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (
-                emp_id, name, dept, pos,
-                hash_pin(pin),
-                datetime.now().isoformat()
-            ))
+            # Check if employee ID exists but is deactivated
+            existing = conn.execute("""
+                SELECT id, is_active FROM employees
+                WHERE employee_id = ?
+            """, (emp_id,)).fetchone()
+
+            if existing and existing["is_active"] == 1:
+                conn.close()
+                self.query_one("#form-status", Label).update(
+                    f"[red]Employee ID {emp_id} already exists.[/]"
+                )
+                return
+            elif existing and existing["is_active"] == 0:
+                # Reactivate instead of inserting
+                conn.execute("""
+                    UPDATE employees
+                    SET full_name = ?, department = ?, position = ?,
+                        pin_hash = ?, is_active = 1
+                    WHERE employee_id = ?
+                """, (name, dept, pos, hash_pin(pin), emp_id))
+            else:
+                conn.execute("""
+                    INSERT INTO employees
+                        (employee_id, full_name, department,
+                         position, pin_hash, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (
+                    emp_id, name, dept, pos,
+                    hash_pin(pin),
+                    datetime.now().isoformat()
+                ))
             conn.commit()
             conn.close()
 
@@ -234,6 +267,11 @@ class AdminApp(App):
                 self.query_one("#form-status", Label).update(
                     f"[green]✓ {name} added successfully.[/]"
                 )
+                self.query_one("#new-emp-id",   Input).value = ""
+                self.query_one("#new-emp-name", Input).value = ""
+                self.query_one("#new-emp-dept", Input).value = ""
+                self.query_one("#new-emp-pos",  Input).value = ""
+                self.query_one("#new-emp-pin",  Input).value = ""
             except Exception:
                 pass
 
@@ -254,18 +292,47 @@ class AdminApp(App):
         except Exception:
             pass
 
+        # Fetch active employees for reference
+        conn = get_connection()
+        employees = conn.execute("""
+            SELECT employee_id, full_name, department, position
+            FROM employees
+            WHERE is_active = 1
+            ORDER BY department, full_name
+        """).fetchall()
+        conn.close()
+
+        emp_labels = [
+            Label(
+                f"  [cyan]{e['employee_id']}[/]  "
+                f"{e['full_name']}  ·  "
+                f"{e['position']}  ·  "
+                f"{e['department']}"
+            )
+            for e in employees
+        ]
+
+        # Preserve deactivation message if it exists
+        deact_message = getattr(self, "_deact_message", "")
+
         self.mount(
             Container(
                 Label("[bold]Deactivate Employee[/]"),
-                Label("Employee ID:"),
+                Label(""),
+                Label("[bold]Active Employees:[/]"),
+                *emp_labels,
+                Label(""),
+                Label("Employee ID to deactivate:"),
                 Input(id="deact-id"),
+                Label("Confirm admin PIN:"),
+                Input(id="deact-pin", password=True),
                 Horizontal(
                     Button("Deactivate",
                            id="btn-deactivate", variant="error"),
                     Button("Back",
                            id="btn-back", variant="default"),
                 ),
-                Label("", id="deact-status"),
+                Label(deact_message, id="deact-status"),
                 id="panel"
             )
         )
@@ -280,7 +347,37 @@ class AdminApp(App):
         if not emp_id:
             return
 
+        # Require admin PIN confirmation
+        try:
+            confirm_pin = self.query_one("#deact-pin", Input).value.strip()
+        except Exception:
+            confirm_pin = ""
+
+        if not authenticate_admin(confirm_pin):
+            try:
+                self.query_one("#deact-status", Label).update(
+                    "[red]Incorrect admin PIN. Deactivation cancelled.[/]"
+                )
+            except Exception:
+                pass
+            return
+
         conn = get_connection()
+        row = conn.execute("""
+            SELECT id FROM employees
+            WHERE employee_id = ? AND is_active = 1
+        """, (emp_id,)).fetchone()
+
+        if not row:
+            conn.close()
+            try:
+                self.query_one("#deact-status", Label).update(
+                    f"[red]Employee {emp_id} not found or already deactivated.[/]"
+                )
+            except Exception:
+                pass
+            return
+
         conn.execute("""
             UPDATE employees SET is_active = 0
             WHERE employee_id = ?
@@ -289,12 +386,18 @@ class AdminApp(App):
         conn.close()
 
         log_audit("ADMIN", "EMPLOYEE_DEACTIVATED", emp_id)
-        try:
-            self.query_one("#deact-status", Label).update(
-                f"[yellow]Employee {emp_id} deactivated.[/]"
-            )
-        except Exception:
-            pass
+        self._deact_message = (
+            f"[green]✓ Employee {emp_id} successfully deactivated.[/]"
+        )
+
+        def reload():
+            try:
+                self.query_one("#panel").remove()
+            except Exception:
+                pass
+            self.call_after_refresh(self._load_deactivate_form)
+
+        self.call_after_refresh(reload)
 
     # ---------------------------------------------------------------- #
     # AUDIT LOG
@@ -365,6 +468,271 @@ class AdminApp(App):
                 pass
         self._load_menu()
 
+    # ---------------------------------------------------------------- #
+    # PROMOTE EMPLOYEE 
+    # ---------------------------------------------------------------- #
+
+    def _load_promote_form(self) -> None:
+        try:
+            self.query_one("#menu-container").remove()
+        except Exception:
+            pass
+
+        conn = get_connection()
+        employees = conn.execute("""
+            SELECT employee_id, full_name, department, position
+            FROM employees
+            WHERE is_active = 1
+            ORDER BY department, full_name
+        """).fetchall()
+        conn.close()
+
+        emp_labels = [
+            Label(
+                f"  [cyan]{e['employee_id']}[/]  "
+                f"{e['full_name']}  ·  "
+                f"{e['position']}  ·  "
+                f"{e['department']}"
+            )
+            for e in employees
+        ]
+
+        self.mount(
+            Container(
+                Label("[bold]Promote Employee to Supervisor[/]"),
+                Label(""),
+                Label("[bold]Active Employees:[/]"),
+                *emp_labels,
+                Label(""),
+                Label("Employee ID to promote:"),
+                Input(id="promote-emp-id"),
+                Label("New Supervisor ID (e.g. SUP-003):"),
+                Input(id="promote-sup-id"),
+                Label("Confirm admin PIN:"),
+                Input(id="promote-pin", password=True),
+                Horizontal(
+                    Button("Promote", id="btn-promote", variant="primary"),
+                    Button("Back",    id="btn-back",    variant="default"),
+                ),
+                Label("", id="promote-status"),
+                id="panel"
+            )
+        )
+
+    def _do_promote(self) -> None:
+        try:
+            emp_id = self.query_one("#promote-emp-id", Input).value.strip().upper()
+            sup_id = self.query_one("#promote-sup-id", Input).value.strip().upper()
+            pin    = self.query_one("#promote-pin",    Input).value.strip()
+        except Exception:
+            return
+
+        if not all([emp_id, sup_id, pin]):
+            try:
+                self.query_one("#promote-status", Label).update(
+                    "[red]All fields are required.[/]"
+                )
+            except Exception:
+                pass
+            return
+
+        if not authenticate_admin(pin):
+            try:
+                self.query_one("#promote-status", Label).update(
+                    "[red]Incorrect admin PIN.[/]"
+                )
+            except Exception:
+                pass
+            return
+
+        conn = get_connection()
+
+        # Check employee exists
+        emp = conn.execute("""
+            SELECT * FROM employees
+            WHERE employee_id = ? AND is_active = 1
+        """, (emp_id,)).fetchone()
+
+        if not emp:
+            conn.close()
+            try:
+                self.query_one("#promote-status", Label).update(
+                    f"[red]Employee {emp_id} not found or already deactivated.[/]"
+                )
+            except Exception:
+                pass
+            return
+
+        # Check SUP ID not already taken or reactivate if deactivated
+        existing_sup = conn.execute("""
+            SELECT id, is_active FROM supervisors
+            WHERE supervisor_id = ?
+        """, (sup_id,)).fetchone()
+
+        if existing_sup and existing_sup["is_active"] == 1:
+            conn.close()
+            try:
+                self.query_one("#promote-status", Label).update(
+                    f"[red]Supervisor ID {sup_id} already exists and is active.[/]"
+                )
+            except Exception:
+                pass
+            return
+
+        # Create or reactivate supervisor record
+        if existing_sup and existing_sup["is_active"] == 0:
+            conn.execute("""
+                UPDATE supervisors
+                SET full_name = ?, department = ?,
+                    pin_hash = ?, is_active = 1
+                WHERE supervisor_id = ?
+            """, (
+                emp["full_name"],
+                emp["department"],
+                emp["pin_hash"],
+                sup_id
+            ))
+        else:
+            conn.execute("""
+                INSERT INTO supervisors
+                    (supervisor_id, full_name, department, pin_hash, created_at)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                sup_id,
+                emp["full_name"],
+                emp["department"],
+                emp["pin_hash"],
+                datetime.now().isoformat()
+            ))
+
+        # Auto-deactivate employee record
+        conn.execute("""
+            UPDATE employees SET is_active = 0
+            WHERE employee_id = ?
+        """, (emp_id,))
+
+        conn.commit()
+        conn.close()
+
+        log_audit(
+            "ADMIN", "PROMOTED",
+            f"{emp_id} → {sup_id} ({emp['full_name']})"
+        )
+
+        try:
+            self.query_one("#promote-status", Label).update(
+                f"[green]✓ {emp['full_name']} promoted to supervisor "
+                f"as {sup_id}. Employee record deactivated.[/]"
+            )
+            self.query_one("#promote-emp-id", Input).value = ""
+            self.query_one("#promote-sup-id", Input).value = ""
+            self.query_one("#promote-pin",    Input).value = ""
+        except Exception:
+            pass
+
+    def _load_deactivate_sup_form(self) -> None:
+        try:
+            self.query_one("#menu-container").remove()
+        except Exception:
+            pass
+
+        conn = get_connection()
+        supervisors = conn.execute("""
+            SELECT supervisor_id, full_name, department
+            FROM supervisors
+            WHERE is_active = 1
+            ORDER BY department, full_name
+        """).fetchall()
+        conn.close()
+
+        sup_labels = [
+            Label(
+                f"  [cyan]{s['supervisor_id']}[/]  "
+                f"{s['full_name']}  ·  "
+                f"{s['department']}"
+            )
+            for s in supervisors
+        ]
+
+        deact_message = getattr(self, "_deact_sup_message", "")
+
+        self.mount(
+            Container(
+                Label("[bold]Deactivate Supervisor[/]"),
+                Label(""),
+                Label("[bold]Active Supervisors:[/]"),
+                *sup_labels,
+                Label(""),
+                Label("Supervisor ID to deactivate:"),
+                Input(id="deact-sup-id"),
+                Label("Confirm admin PIN:"),
+                Input(id="deact-sup-pin", password=True),
+                Horizontal(
+                    Button("Deactivate",
+                           id="btn-deactivate-sup", variant="error"),
+                    Button("Back",
+                           id="btn-back", variant="default"),
+                ),
+                Label(deact_message, id="deact-sup-status"),
+                id="panel"
+            )
+        )
+
+    def _do_deactivate_sup(self) -> None:
+        try:
+            sup_id = self.query_one("#deact-sup-id",  Input).value.strip().upper()
+            pin    = self.query_one("#deact-sup-pin", Input).value.strip()
+        except Exception:
+            return
+
+        if not sup_id or not pin:
+            return
+
+        if not authenticate_admin(pin):
+            try:
+                self.query_one("#deact-sup-status", Label).update(
+                    "[red]Incorrect admin PIN. Deactivation cancelled.[/]"
+                )
+            except Exception:
+                pass
+            return
+
+        conn = get_connection()
+        row = conn.execute("""
+            SELECT id FROM supervisors
+            WHERE supervisor_id = ? AND is_active = 1
+        """, (sup_id,)).fetchone()
+
+        if not row:
+            conn.close()
+            try:
+                self.query_one("#deact-sup-status", Label).update(
+                    f"[red]Supervisor {sup_id} not found or already deactivated.[/]"
+                )
+            except Exception:
+                pass
+            return
+
+        conn.execute("""
+            UPDATE supervisors SET is_active = 0
+            WHERE supervisor_id = ?
+        """, (sup_id,))
+        conn.commit()
+        conn.close()
+
+        log_audit("ADMIN", "SUPERVISOR_DEACTIVATED", sup_id)
+        self._deact_sup_message = (
+            f"[green]✓ Supervisor {sup_id} successfully deactivated.[/]"
+        )
+
+        def reload():
+            try:
+                self.query_one("#panel").remove()
+            except Exception:
+                pass
+            self.call_after_refresh(self._load_deactivate_sup_form)
+
+        self.call_after_refresh(reload)
 
 def run():
     initialize_database()

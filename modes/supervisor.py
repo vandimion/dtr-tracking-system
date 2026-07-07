@@ -18,7 +18,7 @@ from core.auth import authenticate_supervisor
 from ui.display import DTR_CSS, build_attendance_table, SummaryBar
 
 
-REFRESH_INTERVAL = 30
+REFRESH_INTERVAL = 5
 
 
 class SupervisorApp(App):

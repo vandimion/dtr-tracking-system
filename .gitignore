@@ -7,6 +7,8 @@ __pycache__/
 # Database
 data/*.db
 data/*.sqlite
+data/*.db-wal
+data/*.db-shm
 
 # Virtual environment
 venv/
@@ -40,3 +42,4 @@ desktop.ini
 dist/
 build/
 *.egg-info/
+
