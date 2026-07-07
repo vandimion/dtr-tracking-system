@@ -44,16 +44,19 @@ def hours_cell(value: float | None) -> Text:
 # ------------------------------------------------------------------ #
 
 def build_attendance_table(table: DataTable, rows: list[dict]) -> None:
-    table.clear(columns=True)
-    table.add_columns(
-        "Employee",
-        "AM In",
-        "AM Out",
-        "PM In",
-        "PM Out",
-        "Hours",
-        "Status",
-    )
+    table.clear()
+    
+    if not table.columns:
+        table.add_columns(
+            "Employee",
+            "AM In",
+            "AM Out",
+            "PM In",
+            "PM Out",
+            "Hours",
+            "Status",
+        )
+
     for row in rows:
         flagged = bool(row.get("is_flagged", False))
         table.add_row(

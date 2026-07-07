@@ -8,7 +8,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from textual.app import App, ComposeResult
-from textual.widgets import Header, Footer, DataTable, Label, Input, Button
+from textual.widgets import Header, Footer, DataTable, Label, Input, Button, Static
 from textual.containers import Vertical, Horizontal, Container
 from textual.binding import Binding
 from datetime import datetime
@@ -16,6 +16,7 @@ from datetime import datetime
 from core.database import get_connection, initialize_database, log_audit
 from core.auth import authenticate_supervisor
 from ui.display import DTR_CSS, build_attendance_table, SummaryBar
+
 
 REFRESH_INTERVAL = 30
 
@@ -104,8 +105,10 @@ class SupervisorApp(App):
             self.query_one("#login-container").remove()
         except Exception:
             pass
-
-        rows = self._fetch_today_rows()
+        try:
+            self.query_one("#dashboard").remove()
+        except Exception:
+            pass
 
         self.mount(
             Vertical(
@@ -115,18 +118,85 @@ class SupervisorApp(App):
                     f"Supervisor: [cyan]{self.supervisor['full_name']}[/]",
                     id="dash-header"
                 ),
-                DataTable(id="attendance-table"),
-                SummaryBar(id="summary-bar"),
+                Static(id="attendance-display"),
+                Static(id="summary-display"),
                 Label("", id="refresh-label"),
                 id="dashboard"
             )
         )
 
-        table = self.query_one("#attendance-table", DataTable)
-        build_attendance_table(table, rows)
-        self.query_one("#summary-bar", SummaryBar).update_stats(rows)
-        self._update_refresh_label()
+        self.call_after_refresh(self._render_table)
         self.set_interval(1, self._tick)
+
+
+    def _render_table(self) -> None:
+        rows = self._fetch_today_rows()
+
+        from rich.table import Table
+        from rich.text import Text
+
+        table = Table(
+            show_header=True,
+            header_style="bold cyan",
+            expand=True
+        )
+
+        table.add_column("Employee",  style="white",  min_width=20)
+        table.add_column("AM In",     style="green",  min_width=8)
+        table.add_column("AM Out",    style="green",  min_width=8)
+        table.add_column("PM In",     style="green",  min_width=8)
+        table.add_column("PM Out",    style="green",  min_width=8)
+        table.add_column("Hours",     style="cyan",   min_width=6)
+        table.add_column("Status",    min_width=14)
+
+        for row in rows:
+            flagged = bool(row.get("is_flagged", False))
+            status  = row.get("status", "absent")
+
+            if flagged:
+                status_text = Text("⚠  Flagged",    style="bold yellow")
+            elif status == "complete":
+                status_text = Text("✓  Complete",   style="bold green")
+            elif status == "incomplete":
+                status_text = Text("⏳ In progress", style="bold yellow")
+            else:
+                status_text = Text("✗  Absent",     style="bold red")
+
+            name = Text(
+                row["full_name"],
+                style="bold yellow" if flagged else "white"
+            )
+
+            table.add_row(
+                name,
+                Text(row.get("am_in")  or "—",
+                    style="yellow" if flagged else "green"),
+                row.get("am_out") or "—",
+                row.get("pm_in")  or "—",
+                row.get("pm_out") or "—",
+                f"{row.get('total_hours') or '—'}",
+                status_text,
+            )
+
+        total    = len(rows)
+        complete = sum(1 for r in rows if r.get("status") == "complete")
+        flagged  = sum(1 for r in rows if r.get("is_flagged"))
+        absent   = sum(1 for r in rows if not r.get("am_in"))
+        progress = total - complete - absent
+
+        summary = (
+            f"[bold]{total}[/] total  "
+            f"[green]{complete}[/] complete  "
+            f"[yellow]{progress}[/] in progress  "
+            f"[red]{absent}[/] absent  "
+            f"[yellow]{flagged}[/] flagged"
+        )
+
+        try:
+            self.query_one("#attendance-display", Static).update(table)
+            self.query_one("#summary-display",    Static).update(summary)
+        except Exception:
+            pass
 
     def _fetch_today_rows(self) -> list[dict]:
         conn = get_connection()
@@ -142,7 +212,8 @@ class SupervisorApp(App):
                 COALESCE(d.total_hours, NULL) as total_hours,
                 COALESCE(d.status,   'absent') as status,
                 COALESCE(d.is_flagged,     0) as is_flagged,
-                COALESCE(d.flag_reason,   '') as flag_reason
+                COALESCE(d.flag_reason,   '') as flag_reason,
+                d.id as entry_id
             FROM employees e
             LEFT JOIN dtr_entries d
                 ON e.employee_id = d.employee_id
@@ -150,8 +221,53 @@ class SupervisorApp(App):
             WHERE e.is_active = 1
             ORDER BY e.department, e.full_name
         """, (self.today,)).fetchall()
+
+        # Fetch today's corrections
+        corrections = conn.execute("""
+            SELECT c.dtr_entry_id, c.field_corrected, c.new_value
+            FROM corrections c
+            JOIN dtr_entries d ON c.dtr_entry_id = d.id
+            WHERE d.date = ?
+            ORDER BY c.corrected_at
+        """, (self.today,)).fetchall()
         conn.close()
-        return [dict(r) for r in rows]
+
+        # Build correction lookup by entry_id
+        correction_map = {}
+        for c in corrections:
+            entry_id = c["dtr_entry_id"]
+            if entry_id not in correction_map:
+                correction_map[entry_id] = {}
+            correction_map[entry_id][c["field_corrected"]] = c["new_value"]
+
+        # Apply corrections and recalculate hours
+        result = []
+        for row in rows:
+            r = dict(row)
+            entry_id = r.get("entry_id")
+            if entry_id and entry_id in correction_map:
+                for field, new_value in correction_map[entry_id].items():
+                    r[field] = new_value
+
+            # Recalculate total_hours from corrected values
+            try:
+                total = 0.0
+                if r.get("am_in") and r.get("am_out"):
+                    am_in  = datetime.strptime(r["am_in"],  "%H:%M")
+                    am_out = datetime.strptime(r["am_out"], "%H:%M")
+                    total += (am_out - am_in).seconds / 3600
+                if r.get("pm_in") and r.get("pm_out"):
+                    pm_in  = datetime.strptime(r["pm_in"],  "%H:%M")
+                    pm_out = datetime.strptime(r["pm_out"], "%H:%M")
+                    total += (pm_out - pm_in).seconds / 3600
+                if total > 0:
+                    r["total_hours"] = round(total, 2)
+            except Exception:
+                pass
+
+            result.append(r)
+
+        return result
 
     def _tick(self) -> None:
         self.refresh_counter -= 1
@@ -288,24 +404,20 @@ class SupervisorApp(App):
             note=f"Approved by {self.supervisor['supervisor_id']}: {reason}"
         )
 
-        try:
-            self.query_one("#correction-panel").remove()
-        except Exception:
-            pass
-
         self.showing_corrections = False
-        self.action_refresh()
+
+        def refresh_after():
+            try:
+                self.query_one("#correction-panel").remove()
+            except Exception:
+                pass
+            self.call_after_refresh(self._render_table)
+
+        self.call_after_refresh(refresh_after)
 
     def action_refresh(self) -> None:
         self.refresh_counter = REFRESH_INTERVAL
-        rows = self._fetch_today_rows()
-        try:
-            build_attendance_table(
-                self.query_one("#attendance-table", DataTable), rows
-            )
-            self.query_one("#summary-bar", SummaryBar).update_stats(rows)
-        except Exception:
-            pass
+        self.call_after_refresh(self._render_table)
 
     def action_corrections(self) -> None:
         if self.showing_corrections:
