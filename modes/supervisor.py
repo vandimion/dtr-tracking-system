@@ -328,7 +328,23 @@ class SupervisorApp(App):
                         f"PM In: {first['pm_in'] or '—'}  "
                         f"PM Out: {first['pm_out'] or '—'}"
                     ),
-                    Label(f"  Reason: {first['flag_reason'] or '—'}"),
+                    Label(
+                        f"  Flagged fields: [yellow]{first['flag_reason'] or '—'}[/]"
+                    ),
+                    Label(
+                        "  Expected ranges:  "
+                        "[green]AM In: 06:00–10:00[/]  "
+                        "[green]AM Out: 11:00–13:00[/]  "
+                        "[green]PM In: 12:00–14:00[/]  "
+                        "[green]PM Out: 15:00–20:00[/]"
+                    ),
+                    Label(
+                        f"  Logged values:  "
+                        f"AM In: [yellow]{first['am_in'] or '—'}[/]  "
+                        f"AM Out: [yellow]{first['am_out'] or '—'}[/]  "
+                        f"PM In: [yellow]{first['pm_in'] or '—'}[/]  "
+                        f"PM Out: [yellow]{first['pm_out'] or '—'}[/]"
+                    ),
                     Label(""),
                     Label("Field to correct:"),
                     Input(
@@ -344,6 +360,7 @@ class SupervisorApp(App):
                     ),
                     Button("Approve Correction",
                            variant="warning", id="btn-approve"),
+                    Label("", id="corr-error"),
                     id="correction-panel"
                 )
             )
@@ -358,9 +375,72 @@ class SupervisorApp(App):
         except Exception:
             return
 
+        # Validate field name
         if field not in {"am_in", "am_out", "pm_in", "pm_out"}:
+            try:
+                self.query_one("#corr-error", Label).update(
+                    "[red]Invalid field. Must be: am_in, am_out, pm_in, pm_out[/]"
+                )
+            except Exception:
+                self.query_one("#correction-panel").mount(
+                    Label("", id="corr-error")
+                )
+                self.query_one("#corr-error", Label).update(
+                    "[red]Invalid field. Must be: am_in, am_out, pm_in, pm_out[/]"
+                )
             return
-        if not value or not reason:
+
+        # Validate field is actually flagged
+        flagged_fields = [
+            f.strip()
+            for f in (self._current_flagged.get("flag_reason") or "").split(",")
+            if f.strip()
+        ]
+        if flagged_fields and field not in flagged_fields:
+            try:
+                self.query_one("#corr-error", Label).update(
+                    f"[red]'{field}' is not flagged. "
+                    f"Flagged fields: {', '.join(flagged_fields)}[/]"
+                )
+            except Exception:
+                pass
+            return
+
+        # Validate time format
+        try:
+            datetime.strptime(value, "%H:%M")
+        except ValueError:
+            try:
+                self.query_one("#corr-error", Label).update(
+                    "[red]Invalid time format. Use HH:MM (e.g. 08:05)[/]"
+                )
+            except Exception:
+                pass
+            return
+
+        # Validate time is within expected range
+        from core.models import TIME_RULES, validate_time
+        is_valid, warning = validate_time(field, value)
+        if not is_valid:
+            try:
+                self.query_one("#corr-error", Label).update(
+                    f"[red]Correction value is also outside expected range. "
+                    f"Expected {TIME_RULES[field][0]}–{TIME_RULES[field][1]}. "
+                    f"Confirm anyway? Change reason to OVERRIDE to force.[/]"
+                )
+            except Exception:
+                pass
+            if reason.upper() != "OVERRIDE":
+                return
+
+        # Validate reason is not empty
+        if not reason:
+            try:
+                self.query_one("#corr-error", Label).update(
+                    "[red]Reason is required before approving.[/]"
+                )
+            except Exception:
+                pass
             return
 
         entry = self._current_flagged
@@ -388,11 +468,27 @@ class SupervisorApp(App):
             datetime.now().isoformat()
         ))
 
-        conn.execute("""
-            UPDATE dtr_entries
-            SET is_flagged = 0, flag_reason = NULL
-            WHERE id = ?
-        """, (entry["entry_id"],))
+        # Remove corrected field from flag_reason
+        current = conn.execute("""
+            SELECT flag_reason FROM dtr_entries WHERE id = ?
+        """, (entry["entry_id"],)).fetchone()
+
+        existing = current["flag_reason"] if current and current["flag_reason"] else ""
+        remaining = [f.strip() for f in existing.split(",")
+                     if f.strip() and f.strip() != field]
+
+        if remaining:
+            conn.execute("""
+                UPDATE dtr_entries
+                SET flag_reason = ?
+                WHERE id = ?
+            """, (",".join(remaining), entry["entry_id"]))
+        else:
+            conn.execute("""
+                UPDATE dtr_entries
+                SET is_flagged = 0, flag_reason = NULL
+                WHERE id = ?
+            """, (entry["entry_id"],))
 
         conn.commit()
         conn.close()

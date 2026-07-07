@@ -144,13 +144,26 @@ def update_dtr_field(employee_id, date, field, value):
     conn.close()
 
 
-def flag_entry(employee_id, date, reason):
+def flag_entry(employee_id: str, date: str, reason: str, field: str = ""):
     conn = get_connection()
+    row = conn.execute("""
+        SELECT flag_reason FROM dtr_entries
+        WHERE employee_id = ? AND date = ?
+    """, (employee_id, date)).fetchone()
+
+    existing = row["flag_reason"] if row and row["flag_reason"] else ""
+    fields = [f.strip() for f in existing.split(",") if f.strip()]
+
+    if field and field not in fields:
+        fields.append(field)
+
+    new_reason = ",".join(fields) if fields else reason
+
     conn.execute("""
         UPDATE dtr_entries
         SET is_flagged = 1, flag_reason = ?
         WHERE employee_id = ? AND date = ?
-    """, (reason, employee_id, date))
+    """, (new_reason, employee_id, date))
     conn.commit()
     conn.close()
 

@@ -255,7 +255,7 @@ class EmployeeApp(App):
             return
 
         if not is_valid:
-            flag_entry(emp_id, self.today, warning)
+            flag_entry(emp_id, self.today, warning, field=field)
             log_audit(emp_id, "FLAG", f"{field}={value}")
 
         log_audit(emp_id, field.upper(), value)
