@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, Label, Input, Button, DataTable
-from textual.containers import Vertical, Horizontal, Container
+from textual.containers import Vertical, Horizontal, Container, VerticalScroll
 from textual.binding import Binding
 from datetime import datetime
 
@@ -37,6 +37,16 @@ class AdminApp(App):
         border: solid $accent;
         padding: 1 2;
         margin: 1 2;
+        height: auto;
+    }
+
+    VerticalScroll {
+        height: 1fr;
+    }
+    #edit-fields {
+        margin-top: 1;
+        border-top: solid $accent;
+        padding-top: 1;
     }
     #status { margin: 1 2; color: $success; }
     DataTable { height: 20; }
@@ -81,6 +91,10 @@ class AdminApp(App):
             "btn-promote":         self._do_promote,
             "btn-deact-sup-form":  self._load_deactivate_sup_form,
             "btn-deactivate-sup":  self._do_deactivate_sup,
+            "btn-edit-form":       self._load_edit_form,
+            "btn-load-record":     self._load_record_fields,
+            "btn-edit-emp":        self._do_edit_emp,
+            "btn-edit-sup":        self._do_edit_sup,
         }
         handler = handlers.get(event.button.id)
         if handler:
@@ -146,6 +160,10 @@ class AdminApp(App):
                     Button(
                         "[7] Deactivate supervisor",
                         id="btn-deact-sup-form", variant="error"
+                    ),
+                    Button(
+                        "[8] Edit employee / supervisor details",
+                        id="btn-edit-form", variant="default"
                     ),
                     id="menu-box"
                 ),
@@ -733,6 +751,334 @@ class AdminApp(App):
             self.call_after_refresh(self._load_deactivate_sup_form)
 
         self.call_after_refresh(reload)
+
+    def _load_edit_form(self) -> None:
+        try:
+            self.query_one("#menu-container").remove()
+        except Exception:
+            pass
+
+        conn = get_connection()
+        employees = conn.execute("""
+            SELECT employee_id, full_name, department, position
+            FROM employees WHERE is_active = 1
+            ORDER BY department, full_name
+        """).fetchall()
+        supervisors = conn.execute("""
+            SELECT supervisor_id, full_name, department
+            FROM supervisors WHERE is_active = 1
+            ORDER BY full_name
+        """).fetchall()
+        conn.close()
+
+        emp_labels = [
+            Label(
+                f"  [cyan]{e['employee_id']}[/]  "
+                f"{e['full_name']}  ·  "
+                f"{e['position']}  ·  "
+                f"{e['department']}"
+            )
+            for e in employees
+        ]
+
+        sup_labels = [
+            Label(
+                f"  [cyan]{s['supervisor_id']}[/]  "
+                f"{s['full_name']}  ·  "
+                f"{s['department']}"
+            )
+            for s in supervisors
+        ]
+
+        self.mount(
+            VerticalScroll(
+                Container(
+                    Label("[bold]Edit Employee / Supervisor Details[/]"),
+                    Label(""),
+                    Label("[bold cyan]Employees:[/]"),
+                    *emp_labels,
+                    Label(""),
+                    Label("[bold cyan]Supervisors:[/]"),
+                    *sup_labels,
+                    Label(""),
+                    Label("Enter ID to edit (EMP-XXX or SUP-XXX):"),
+                    Input(id="edit-id"),
+                    Horizontal(
+                        Button("Load",  id="btn-load-record", variant="default"),
+                        Button("Back",  id="btn-back",        variant="default"),
+                    ),
+                    Label("", id="edit-status"),
+                    id="panel"
+                ),
+                id="edit-scroll"
+            )
+        )
+
+    def _load_record_fields(self) -> None:
+        try:
+            record_id = self.query_one(
+                "#edit-id", Input).value.strip().upper()
+        except Exception:
+            return
+
+        if not record_id:
+            return
+
+        conn = get_connection()
+
+        if record_id.startswith("SUP"):
+            record = conn.execute("""
+                SELECT * FROM supervisors
+                WHERE supervisor_id = ? AND is_active = 1
+            """, (record_id,)).fetchone()
+            conn.close()
+
+            if not record:
+                try:
+                    self.query_one("#edit-status", Label).update(
+                        f"[red]Supervisor {record_id} not found.[/]"
+                    )
+                except Exception:
+                    pass
+                return
+
+            conn2 = get_connection()
+            employees  = conn2.execute("""
+                SELECT employee_id, full_name, department, position
+                FROM employees WHERE is_active = 1
+                ORDER BY department, full_name
+            """).fetchall()
+            supervisors = conn2.execute("""
+                SELECT supervisor_id, full_name, department
+                FROM supervisors WHERE is_active = 1
+                ORDER BY full_name
+            """).fetchall()
+            conn2.close()
+
+            emp_labels = [
+                Label(f"  [cyan]{e['employee_id']}[/]  {e['full_name']}  ·  {e['department']}")
+                for e in employees
+            ]
+            sup_labels = [
+                Label(f"  [cyan]{s['supervisor_id']}[/]  {s['full_name']}  ·  {s['department']}")
+                for s in supervisors
+            ]
+
+            new_widget = VerticalScroll(
+                Container(
+                    Label("[bold]Edit Employee / Supervisor Details[/]"),
+                    Label(""),
+                    Label("[bold cyan]Employees:[/]"),
+                    *emp_labels,
+                    Label(""),
+                    Label("[bold cyan]Supervisors:[/]"),
+                    *sup_labels,
+                    Label(""),
+                    Label("Enter ID to edit (EMP-XXX or SUP-XXX):"),
+                    Input(value=record_id, id="edit-id"),
+                    Horizontal(
+                        Button("Load", id="btn-load-record", variant="default"),
+                        Button("Back", id="btn-back",        variant="default"),
+                    ),
+                    Label("", id="edit-status"),
+                    Label(""),
+                    Label(f"[bold]Editing: {record['full_name']} ({record_id})[/]"),
+                    Label("Full name:"),
+                    Input(value=record["full_name"],  id="edit-name"),
+                    Label("Department:"),
+                    Input(value=record["department"], id="edit-dept"),
+                    Label("New PIN (leave blank to keep):"),
+                    Input(id="edit-pin", password=True),
+                    Label("Confirm admin PIN:"),
+                    Input(id="edit-admin-pin", password=True),
+                    Button("Save Changes", id="btn-edit-sup", variant="success"),
+                    id="panel"
+                ),
+                id="edit-scroll"
+            )
+
+            def remove_then_mount_sup():
+                try:
+                    self.query_one("#edit-scroll").remove()
+                except Exception:
+                    pass
+                self.call_after_refresh(lambda: self.mount(new_widget))
+
+            self.call_after_refresh(remove_then_mount_sup)
+
+        else:
+            record = conn.execute("""
+                SELECT * FROM employees
+                WHERE employee_id = ? AND is_active = 1
+            """, (record_id,)).fetchone()
+            conn.close()
+
+            if not record:
+                try:
+                    self.query_one("#edit-status", Label).update(
+                        f"[red]Employee {record_id} not found.[/]"
+                    )
+                except Exception:
+                    pass
+                return
+
+            conn2 = get_connection()
+            employees  = conn2.execute("""
+                SELECT employee_id, full_name, department, position
+                FROM employees WHERE is_active = 1
+                ORDER BY department, full_name
+            """).fetchall()
+            supervisors = conn2.execute("""
+                SELECT supervisor_id, full_name, department
+                FROM supervisors WHERE is_active = 1
+                ORDER BY full_name
+            """).fetchall()
+            conn2.close()
+
+            emp_labels = [
+                Label(f"  [cyan]{e['employee_id']}[/]  {e['full_name']}  ·  {e['department']}")
+                for e in employees
+            ]
+            sup_labels = [
+                Label(f"  [cyan]{s['supervisor_id']}[/]  {s['full_name']}  ·  {s['department']}")
+                for s in supervisors
+            ]
+
+            new_widget = VerticalScroll(
+                Container(
+                    Label("[bold]Edit Employee / Supervisor Details[/]"),
+                    Label(""),
+                    Label("[bold cyan]Employees:[/]"),
+                    *emp_labels,
+                    Label(""),
+                    Label("[bold cyan]Supervisors:[/]"),
+                    *sup_labels,
+                    Label(""),
+                    Label("Enter ID to edit (EMP-XXX or SUP-XXX):"),
+                    Input(value=record_id, id="edit-id"),
+                    Horizontal(
+                        Button("Load", id="btn-load-record", variant="default"),
+                        Button("Back", id="btn-back",        variant="default"),
+                    ),
+                    Label("", id="edit-status"),
+                    Label(""),
+                    Label(f"[bold]Editing: {record['full_name']} ({record_id})[/]"),
+                    Label("Full name:"),
+                    Input(value=record["full_name"],  id="edit-name"),
+                    Label("Department:"),
+                    Input(value=record["department"], id="edit-dept"),
+                    Label("Position:"),
+                    Input(value=record["position"],   id="edit-pos"),
+                    Label("New PIN (leave blank to keep):"),
+                    Input(id="edit-pin", password=True),
+                    Label("Confirm admin PIN:"),
+                    Input(id="edit-admin-pin", password=True),
+                    Button("Save Changes", id="btn-edit-emp", variant="success"),
+                    id="panel"
+                ),
+                id="edit-scroll"
+            )
+
+            def remove_then_mount_emp():
+                try:
+                    self.query_one("#edit-scroll").remove()
+                except Exception:
+                    pass
+                self.call_after_refresh(lambda: self.mount(new_widget))
+
+            self.call_after_refresh(remove_then_mount_emp)
+
+    def _do_edit_emp(self) -> None:
+        try:
+            record_id = self.query_one("#edit-id",        Input).value.strip().upper()
+            name      = self.query_one("#edit-name",      Input).value.strip()
+            dept      = self.query_one("#edit-dept",      Input).value.strip()
+            pos       = self.query_one("#edit-pos",       Input).value.strip()
+            new_pin   = self.query_one("#edit-pin",       Input).value.strip()
+            admin_pin = self.query_one("#edit-admin-pin", Input).value.strip()
+        except Exception:
+            return
+
+        if not authenticate_admin(admin_pin):
+            try:
+                self.query_one("#edit-status", Label).update(
+                    "[red]Incorrect admin PIN.[/]"
+                )
+            except Exception:
+                pass
+            return
+
+        conn = get_connection()
+        if new_pin:
+            conn.execute("""
+                UPDATE employees
+                SET full_name = ?, department = ?,
+                    position = ?, pin_hash = ?
+                WHERE employee_id = ?
+            """, (name, dept, pos, hash_pin(new_pin), record_id))
+        else:
+            conn.execute("""
+                UPDATE employees
+                SET full_name = ?, department = ?, position = ?
+                WHERE employee_id = ?
+            """, (name, dept, pos, record_id))
+        conn.commit()
+        conn.close()
+
+        log_audit("ADMIN", "EMPLOYEE_EDITED", f"{record_id} updated")
+        try:
+            self.query_one("#edit-status", Label).update(
+                f"[green]✓ {record_id} updated successfully.[/]"
+            )
+            self.query_one("#edit-pin",       Input).value = ""
+            self.query_one("#edit-admin-pin", Input).value = ""
+        except Exception:
+            pass
+
+    def _do_edit_sup(self) -> None:
+        try:
+            record_id = self.query_one("#edit-id",        Input).value.strip().upper()
+            name      = self.query_one("#edit-name",      Input).value.strip()
+            dept      = self.query_one("#edit-dept",      Input).value.strip()
+            new_pin   = self.query_one("#edit-pin",       Input).value.strip()
+            admin_pin = self.query_one("#edit-admin-pin", Input).value.strip()
+        except Exception:
+            return
+
+        if not authenticate_admin(admin_pin):
+            try:
+                self.query_one("#edit-status", Label).update(
+                    "[red]Incorrect admin PIN.[/]"
+                )
+            except Exception:
+                pass
+            return
+
+        conn = get_connection()
+        if new_pin:
+            conn.execute("""
+                UPDATE supervisors
+                SET full_name = ?, department = ?, pin_hash = ?
+                WHERE supervisor_id = ?
+            """, (name, dept, hash_pin(new_pin), record_id))
+        else:
+            conn.execute("""
+                UPDATE supervisors
+                SET full_name = ?, department = ?
+                WHERE supervisor_id = ?
+            """, (name, dept, record_id))
+        conn.commit()
+        conn.close()
+
+        log_audit("ADMIN", "SUPERVISOR_EDITED", f"{record_id} updated")
+        try:
+            self.query_one("#edit-status", Label).update(
+                f"[green]✓ {record_id} updated successfully.[/]"
+            )
+            self.query_one("#edit-pin",       Input).value = ""
+            self.query_one("#edit-admin-pin", Input).value = ""
+        except Exception:
+            pass
 
 def run():
     initialize_database()
