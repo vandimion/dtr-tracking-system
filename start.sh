@@ -4,6 +4,9 @@
 # Run this instead of calling main.py directly.
 # Usage: bash start.sh
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+MAIN_PY="$SCRIPT_DIR/main.py"
+
 clear
 
 echo "================================================"
@@ -23,23 +26,23 @@ read -p "Select mode: " choice
 case $choice in
     1)
         echo "Starting Employee mode..."
-        python main.py --mode employee --terminal "TERMINAL-1"
+        python "$MAIN_PY" --mode employee --terminal "TERMINAL-1"
         ;;
     2)
         echo "Starting Supervisor mode..."
-        python main.py --mode supervisor --terminal "SUPERVISOR"
+        python "$MAIN_PY" --mode supervisor --terminal "SUPERVISOR"
         ;;
     3)
         echo "Starting Admin mode..."
-        python main.py --mode admin --terminal "ADMIN"
+        python "$MAIN_PY" --mode admin --terminal "ADMIN"
         ;;
     4)
         echo "Initializing database..."
-        python main.py --init
+        python "$MAIN_PY" --init
         ;;
     5)
         echo "Seeding sample data..."
-        python main.py --seed
+        python "$MAIN_PY" --seed
         ;;
     q|Q)
         echo "Goodbye."
